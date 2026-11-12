@@ -404,6 +404,20 @@
         </ol>
     </div>
 
+    <!-- Modal informativo (bienvenida y explicación de modos) -->
+    <div id="modal-info" class="hidden fixed inset-0 z-50 items-center justify-center p-6 bg-black/60" role="dialog" aria-modal="true" aria-labelledby="info-title">
+        <div class="bg-white text-pm-darkText rounded-3xl p-6 w-full max-w-sm max-h-[90vh] overflow-y-auto text-center shadow-card">
+            <i id="info-icon" class="fa-solid fa-graduation-cap text-5xl text-pm-purple mb-3"></i>
+            <h3 id="info-title" class="text-2xl font-bold mb-3"></h3>
+            <div id="info-body" class="text-gray-600 font-semibold text-left space-y-3 mb-5"></div>
+            <button id="info-ok" onclick="closeInfo(true)" class="btn-game w-full bg-pm-yellow text-pm-darkText rounded-2xl p-3 shadow-btn font-bold text-xl"></button>
+            <button id="info-back" onclick="closeInfo(false)" class="hidden mt-3 text-gray-500 font-bold underline">Volver</button>
+        </div>
+    </div>
+
+    <!-- Aviso breve -->
+    <div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-pm-bgBottom text-white font-bold rounded-full px-5 py-3 shadow-card border-2 border-pm-yellow text-center max-w-[90vw]" role="status"></div>
+
     <!-- Modal de confirmación -->
     <div id="modal-confirm" class="hidden fixed inset-0 z-50 items-center justify-center p-6 bg-black/60" role="dialog" aria-modal="true">
         <div class="bg-white text-pm-darkText rounded-3xl p-6 w-full max-w-sm text-center shadow-card">
@@ -685,6 +699,42 @@
         const isRegular = (base) => !!(verbsByBase.get(base) || {}).reg;
         let wordFilter = 'all';
 
+        // Lado de la respuesta correcta: se reparte en "bolsas" equilibradas (mitad izquierda, mitad derecha),
+        // barajadas, sin permitir más de MAX_SAME_SIDE seguidas del mismo lado (ni entre bolsas).
+        // Así elegir siempre el mismo lado no sirve y tampoco hay patrones fáciles de adivinar.
+        const SIDE_BAG_SIZE = 6;
+        const MAX_SAME_SIDE = 2;
+        let sideBag = [];
+        let lastSides = [];
+        function runLengthOk(seq, prev) {
+            let run = 0, last = prev.length ? prev[prev.length - 1] : 0;
+            for (let i = prev.length - 1; i >= 0 && prev[i] === last; i--) run++;
+            for (const s of seq) {
+                if (s === last) run++; else { last = s; run = 1; }
+                if (run > MAX_SAME_SIDE) return false;
+            }
+            return true;
+        }
+        function refillSideBag() {
+            const half = SIDE_BAG_SIZE / 2;
+            for (let tries = 0; tries < 200; tries++) {
+                const bag = [...Array(half).fill(1), ...Array(half).fill(2)];
+                for (let i = bag.length - 1; i > 0; i--) {        // Fisher–Yates
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [bag[i], bag[j]] = [bag[j], bag[i]];
+                }
+                if (runLengthOk(bag, lastSides)) { sideBag = bag; return; }
+            }
+            sideBag = [1, 2, 1, 2, 1, 2]; // respaldo (prácticamente inalcanzable)
+        }
+        function nextCorrectSide() {
+            if (sideBag.length === 0) refillSideBag();
+            const side = sideBag.shift();
+            lastSides.push(side);
+            if (lastSides.length > MAX_SAME_SIDE) lastSides.shift();
+            return side;
+        }
+
         // Cola de verbos recientes: un verbo no vuelve a salir hasta que pasen al menos 10 turnos
         const NO_REPEAT_TURNS = 10;
         let recentWords = [];
@@ -857,7 +907,18 @@
             }
         }
 
+        // Primera vez en un modo: se muestra su explicación y luego arranca la partida
         function startGame(mode) {
+            if (!seen[mode]) {
+                showInfo(mode, () => { markSeen(mode); beginGame(mode); }, true);
+                return;
+            }
+            beginGame(mode);
+        }
+
+        function beginGame(mode) {
+            sideBag = [];
+            lastSides = [];
             currentMode = mode;
             score = 0;
             streak = 0;
@@ -912,7 +973,7 @@
             
             // Randomize buttons
             resetButtons();
-            correctButtonId = Math.random() < 0.5 ? 1 : 2;
+            correctButtonId = nextCorrectSide();
             
             if (correctButtonId === 1) {
                 btnOpt1.innerText = word.correct.toUpperCase();
@@ -1156,7 +1217,116 @@
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeConfirm();
         });
-        
+
+        // ===== Pop-ups informativos (solo la primera vez) =====
+        const SEEN_KEY = 'pastMasterSeen';
+        let seen = {};
+        try { seen = JSON.parse(localStorage.getItem(SEEN_KEY)) || {}; } catch (e) {}
+        function markSeen(key) {
+            seen[key] = true;
+            try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch (e) {}
+        }
+
+        const INFO = {
+            intro: {
+                icon: 'fa-graduation-cap text-pm-purple',
+                title: '¡Bienvenido a Past Master!',
+                body: [
+                    'Practica el <b>pasado simple</b> en inglés con partidas cortas y rápidas.',
+                    'En cada ronda verás un verbo y <b>dos opciones</b>: toca la que sea su forma correcta en pasado.',
+                    'Cada acierto suma puntos y aumenta tu <b>racha</b>; cada error te quita una vida.',
+                    'Los verbos que veas se guardan en <b>My Words</b> con su traducción, y tus mejores puntuaciones quedan en <b>Récords</b>.',
+                    'Elige un modo de juego para empezar.'
+                ],
+                ok: '¡Entendido!'
+            },
+            standard: {
+                icon: 'fa-bullseye text-pm-blue',
+                title: 'Modo Standard',
+                body: [
+                    'Llega tan lejos como puedas con <b>tres vidas</b>.',
+                    'Cada error te quita una vida y la partida termina cuando se acaban. No hay límite de tiempo, así que piensa con calma.',
+                    'Mantén tu racha de aciertos para ganar más puntos.'
+                ],
+                ok: '¡A jugar!'
+            },
+            rush: {
+                icon: 'fa-stopwatch text-pm-purple',
+                title: 'Modo Rush',
+                body: [
+                    'Tienes <b>2 minutos</b> para responder tantos verbos como puedas.',
+                    'También cuentas con <b>tres vidas</b>: si se acaban antes de que termine el tiempo, la partida termina antes.',
+                    'Responde rápido y sin errores para lograr la mejor puntuación.'
+                ],
+                ok: '¡A jugar!'
+            }
+        };
+
+        let infoOnOk = null;
+        function showInfo(key, onOk, allowBack) {
+            const d = INFO[key];
+            document.getElementById('info-icon').className = 'fa-solid text-5xl mb-3 ' + d.icon;
+            document.getElementById('info-title').textContent = d.title;
+            document.getElementById('info-body').innerHTML = d.body.map(t => `<p>${t}</p>`).join('');
+            document.getElementById('info-ok').textContent = d.ok;
+            document.getElementById('info-back').classList.toggle('hidden', !allowBack);
+            infoOnOk = onOk || null;
+            const m = document.getElementById('modal-info');
+            m.classList.remove('hidden');
+            m.classList.add('flex');
+            document.getElementById('info-ok').focus();
+        }
+        function closeInfo(accepted) {
+            const m = document.getElementById('modal-info');
+            m.classList.add('hidden');
+            m.classList.remove('flex');
+            const cb = infoOnOk;
+            infoOnOk = null;
+            if (accepted && cb) cb();
+        }
+        const isInfoOpen = () => document.getElementById('modal-info').classList.contains('flex');
+
+        // Bienvenida: solo la primera vez que se abre la aplicación
+        if (!seen.intro) showInfo('intro', () => markSeen('intro'), false);
+
+        // ===== Aviso breve =====
+        let toastTimer = null;
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.classList.remove('hidden');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => t.classList.add('hidden'), 3500);
+        }
+
+        // ===== Código interno de pruebas =====
+        // Escribir "devtest123" con el teclado en la pantalla principal desbloquea todas las palabras de My Words.
+        const DEV_CODE = 'devtest123';
+        let devBuffer = '';
+        function unlockAllWords() {
+            const known = new Set(myWords.map(w => w.base));
+            let added = 0;
+            verbsList.forEach(v => {
+                if (!known.has(v.base)) { myWords.push(v); added++; }
+            });
+            try { localStorage.setItem('pastMasterWords', JSON.stringify(myWords)); } catch (e) {}
+            showToast(`🔧 Modo de prueba: ${myWords.length}/${verbsList.length} palabras desbloqueadas` + (added ? ` (+${added})` : ''));
+        }
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
+            const tag = e.target && e.target.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            if (!document.getElementById('screen-menu').classList.contains('active') || isInfoOpen()) {
+                devBuffer = '';
+                return;
+            }
+            devBuffer = (devBuffer + e.key.toLowerCase()).slice(-DEV_CODE.length);
+            if (devBuffer === DEV_CODE) {
+                devBuffer = '';
+                unlockAllWords();
+            }
+        });
+
     </script>
 </body>
 </html>
